@@ -1,0 +1,645 @@
+const express = require('express');
+const bodyParser = require('body-parser');
+const mysql = require('mysql2/promise');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+const jwtSecret = 'your_jwt_secret';
+
+app.use(cors());
+app.use(bodyParser.json());
+
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'root',
+  password: 'root',
+  database: 'BOOK_EXCHANGE_SYSTEM'
+});
+
+
+// Middleware function to verify JWT token
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  jwt.verify(token, jwtSecret, (err, decoded) => {
+    if (err) {
+      console.error(err);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    req.user = decoded; // Attach decoded user information to the request object
+    next(); // Call next middleware
+  });
+};
+
+
+// Apply the verifyToken middleware to all routes
+app.use(verifyToken);
+
+// Add Book
+app.post('/books', async (req, res) => {
+  const { title, author, genre, book_condition, availability_status, owner_id } = req.body;
+  const query = `INSERT INTO Book (title, author, genre, book_condition, availability_status, owner_id) 
+                 VALUES (?, ?, ?, ?, ?, ?)`;
+  try {
+    const result = await pool.query(query, [title, author, genre, book_condition, availability_status, owner_id]);
+    const bookId = result[0].insertId;
+    const book = {
+      bookId,
+      title,
+      author,
+      genre,
+      book_condition,
+      availability_status,
+      owner_id,
+      links: [
+        { rel: 'self', href: `/books/${bookId}` },
+        { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+        { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+      ]
+    };
+    res.status(201).json(book);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error adding book' });
+  }
+});
+
+// Retrieve Book by ID
+app.get('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const query = 'SELECT * FROM Book WHERE book_id = ?';
+  try {
+    const [results] = await pool.query(query, [bookId]);
+    if (results.length === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      const book = {
+        ...results[0],
+        links: [
+          { rel: 'self', href: `/books/${bookId}` },
+          { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+        ]
+      };
+      res.status(200).json(book);
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error retrieving book' });
+  }
+});
+
+// Update Book
+app.put('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const { title, author, genre, book_condition, availability_status, owner_id } = req.body;
+  const query = `UPDATE Book SET title=?, author=?, genre=?, book_condition=?, availability_status=?, owner_id=? WHERE book_id=?`;
+  try {
+    const result = await pool.query(query, [title, author, genre, book_condition, availability_status, owner_id, bookId]);
+    if (result.affectedRows === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      const book = {
+        bookId,
+        title,
+        author,
+        genre,
+        book_condition,
+        availability_status,
+        owner_id,
+        links: [
+          { rel: 'self', href: `/books/${bookId}` },
+          { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+        ]
+      };
+      res.status(200).json(book);
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error updating book' });
+  }
+});
+
+// Delete Book
+app.delete('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const query = `DELETE FROM Book WHERE book_id=?`;
+  try {
+    const result = await pool.query(query, [bookId]);
+    if (result.affectedRows === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      res.status(200).json({ message: 'Book deleted successfully' });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error deleting book' });
+  }
+});
+
+// Retrieve All Books
+app.get('/books', async (req, res) => {
+    const userId = req.query.userId;
+    const includeUserId = req.query.includeUserId;
+    let query = 'SELECT * FROM Book';
+  
+    // If includeUserId is provided, show books only of that user ID
+    if (includeUserId=="true") {
+      query += ` WHERE owner_id = ${userId}`;
+    } else if (includeUserId=="false") {
+      query += ` WHERE owner_id != ${userId}`;
+    }
+  
+    try {
+      const [results] = await pool.query(query);
+      const books = results.map(book => ({
+        ...book,
+        links: [
+          { rel: 'self', href: `/books/${book.book_id}` },
+          { rel: 'update', href: `/books/${book.book_id}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${book.book_id}`, method: 'DELETE' }
+        ]
+      }));
+      res.status(200).json(books);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Error retrieving books' });
+    }
+  });
+
+
+
+// Handle non-implemented HTTP methods for '/books'
+app.all('/books', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Allow', 'GET, POST'); // Set allowed methods in the response headers
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+// Handle non-implemented HTTP methods for '/books/:id'
+app.all('/books/:id', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Allow', 'GET, PUT, DELETE'); // Set allowed methods in the response headers
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+// Handle non-implemented HTTP methods for other routes
+app.all('*', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+
+app.listen(PORT, () => {
+  console.log(`Books microservice is running on port ${PORT}`);
+});
+
+const express = require('express');
+const bodyParser = require('body-parser');
+const mysql = require('mysql2/promise');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+const jwtSecret = 'your_jwt_secret';
+
+app.use(cors());
+app.use(bodyParser.json());
+
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'root',
+  password: 'root',
+  database: 'BOOK_EXCHANGE_SYSTEM'
+});
+
+
+// Middleware function to verify JWT token
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  jwt.verify(token, jwtSecret, (err, decoded) => {
+    if (err) {
+      console.error(err);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    req.user = decoded; // Attach decoded user information to the request object
+    next(); // Call next middleware
+  });
+};
+
+
+// Apply the verifyToken middleware to all routes
+app.use(verifyToken);
+
+// Add Book
+app.post('/books', async (req, res) => {
+  const { title, author, genre, book_condition, availability_status, owner_id } = req.body;
+  const query = `INSERT INTO Book (title, author, genre, book_condition, availability_status, owner_id) 
+                 VALUES (?, ?, ?, ?, ?, ?)`;
+  try {
+    const result = await pool.query(query, [title, author, genre, book_condition, availability_status, owner_id]);
+    const bookId = result[0].insertId;
+    const book = {
+      bookId,
+      title,
+      author,
+      genre,
+      book_condition,
+      availability_status,
+      owner_id,
+      links: [
+        { rel: 'self', href: `/books/${bookId}` },
+        { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+        { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+      ]
+    };
+    res.status(201).json(book);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error adding book' });
+  }
+});
+
+// Retrieve Book by ID
+app.get('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const query = 'SELECT * FROM Book WHERE book_id = ?';
+  try {
+    const [results] = await pool.query(query, [bookId]);
+    if (results.length === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      const book = {
+        ...results[0],
+        links: [
+          { rel: 'self', href: `/books/${bookId}` },
+          { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+        ]
+      };
+      res.status(200).json(book);
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error retrieving book' });
+  }
+});
+
+// Update Book
+app.put('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const { title, author, genre, book_condition, availability_status, owner_id } = req.body;
+  const query = `UPDATE Book SET title=?, author=?, genre=?, book_condition=?, availability_status=?, owner_id=? WHERE book_id=?`;
+  try {
+    const result = await pool.query(query, [title, author, genre, book_condition, availability_status, owner_id, bookId]);
+    if (result.affectedRows === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      const book = {
+        bookId,
+        title,
+        author,
+        genre,
+        book_condition,
+        availability_status,
+        owner_id,
+        links: [
+          { rel: 'self', href: `/books/${bookId}` },
+          { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+        ]
+      };
+      res.status(200).json(book);
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error updating book' });
+  }
+});
+
+// Delete Book
+app.delete('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const query = `DELETE FROM Book WHERE book_id=?`;
+  try {
+    const result = await pool.query(query, [bookId]);
+    if (result.affectedRows === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      res.status(200).json({ message: 'Book deleted successfully' });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error deleting book' });
+  }
+});
+
+// Retrieve All Books
+app.get('/books', async (req, res) => {
+    const userId = req.query.userId;
+    const includeUserId = req.query.includeUserId;
+    let query = 'SELECT * FROM Book';
+  
+    // If includeUserId is provided, show books only of that user ID
+    if (includeUserId=="true") {
+      query += ` WHERE owner_id = ${userId}`;
+    } else if (includeUserId=="false") {
+      query += ` WHERE owner_id != ${userId}`;
+    }
+  
+    try {
+      const [results] = await pool.query(query);
+      const books = results.map(book => ({
+        ...book,
+        links: [
+          { rel: 'self', href: `/books/${book.book_id}` },
+          { rel: 'update', href: `/books/${book.book_id}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${book.book_id}`, method: 'DELETE' }
+        ]
+      }));
+      res.status(200).json(books);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Error retrieving books' });
+    }
+  });
+
+
+
+// Handle non-implemented HTTP methods for '/books'
+app.all('/books', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Allow', 'GET, POST'); // Set allowed methods in the response headers
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+// Handle non-implemented HTTP methods for '/books/:id'
+app.all('/books/:id', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Allow', 'GET, PUT, DELETE'); // Set allowed methods in the response headers
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+// Handle non-implemented HTTP methods for other routes
+app.all('*', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+
+app.listen(PORT, () => {
+  console.log(`Books microservice is running on port ${PORT}`);
+});
+
+const express = require('express');
+const bodyParser = require('body-parser');
+const mysql = require('mysql2/promise');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+const jwtSecret = 'your_jwt_secret';
+
+app.use(cors());
+app.use(bodyParser.json());
+
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'root',
+  password: 'root',
+  database: 'BOOK_EXCHANGE_SYSTEM'
+});
+
+
+// Middleware function to verify JWT token
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  jwt.verify(token, jwtSecret, (err, decoded) => {
+    if (err) {
+      console.error(err);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    req.user = decoded; // Attach decoded user information to the request object
+    next(); // Call next middleware
+  });
+};
+
+
+// Apply the verifyToken middleware to all routes
+app.use(verifyToken);
+
+// Add Book
+app.post('/books', async (req, res) => {
+  const { title, author, genre, book_condition, availability_status, owner_id } = req.body;
+  const query = `INSERT INTO Book (title, author, genre, book_condition, availability_status, owner_id) 
+                 VALUES (?, ?, ?, ?, ?, ?)`;
+  try {
+    const result = await pool.query(query, [title, author, genre, book_condition, availability_status, owner_id]);
+    const bookId = result[0].insertId;
+    const book = {
+      bookId,
+      title,
+      author,
+      genre,
+      book_condition,
+      availability_status,
+      owner_id,
+      links: [
+        { rel: 'self', href: `/books/${bookId}` },
+        { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+        { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+      ]
+    };
+    res.status(201).json(book);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error adding book' });
+  }
+});
+
+// Retrieve Book by ID
+app.get('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const query = 'SELECT * FROM Book WHERE book_id = ?';
+  try {
+    const [results] = await pool.query(query, [bookId]);
+    if (results.length === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      const book = {
+        ...results[0],
+        links: [
+          { rel: 'self', href: `/books/${bookId}` },
+          { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+        ]
+      };
+      res.status(200).json(book);
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error retrieving book' });
+  }
+});
+
+// Update Book
+app.put('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const { title, author, genre, book_condition, availability_status, owner_id } = req.body;
+  const query = `UPDATE Book SET title=?, author=?, genre=?, book_condition=?, availability_status=?, owner_id=? WHERE book_id=?`;
+  try {
+    const result = await pool.query(query, [title, author, genre, book_condition, availability_status, owner_id, bookId]);
+    if (result.affectedRows === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      const book = {
+        bookId,
+        title,
+        author,
+        genre,
+        book_condition,
+        availability_status,
+        owner_id,
+        links: [
+          { rel: 'self', href: `/books/${bookId}` },
+          { rel: 'update', href: `/books/${bookId}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${bookId}`, method: 'DELETE' }
+        ]
+      };
+      res.status(200).json(book);
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error updating book' });
+  }
+});
+
+// Delete Book
+app.delete('/books/:id', async (req, res) => {
+  const bookId = req.params.id;
+  const query = `DELETE FROM Book WHERE book_id=?`;
+  try {
+    const result = await pool.query(query, [bookId]);
+    if (result.affectedRows === 0) {
+      res.status(404).json({ message: 'Book not found' });
+    } else {
+      res.status(200).json({ message: 'Book deleted successfully' });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error deleting book' });
+  }
+});
+
+// Retrieve All Books
+app.get('/books', async (req, res) => {
+    const userId = req.query.userId;
+    const includeUserId = req.query.includeUserId;
+    let query = 'SELECT * FROM Book';
+  
+    // If includeUserId is provided, show books only of that user ID
+    if (includeUserId=="true") {
+      query += ` WHERE owner_id = ${userId}`;
+    } else if (includeUserId=="false") {
+      query += ` WHERE owner_id != ${userId}`;
+    }
+  
+    try {
+      const [results] = await pool.query(query);
+      const books = results.map(book => ({
+        ...book,
+        links: [
+          { rel: 'self', href: `/books/${book.book_id}` },
+          { rel: 'update', href: `/books/${book.book_id}`, method: 'PUT' },
+          { rel: 'delete', href: `/books/${book.book_id}`, method: 'DELETE' }
+        ]
+      }));
+      res.status(200).json(books);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Error retrieving books' });
+    }
+  });
+
+
+
+// Handle non-implemented HTTP methods for '/books'
+app.all('/books', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Allow', 'GET, POST'); // Set allowed methods in the response headers
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+// Handle non-implemented HTTP methods for '/books/:id'
+app.all('/books/:id', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Allow', 'GET, PUT, DELETE'); // Set allowed methods in the response headers
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+// Handle non-implemented HTTP methods for other routes
+app.all('*', (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
+});
+
+
+app.listen(PORT, () => {
+  console.log(`Books microservice is running on port ${PORT}`);
+});
+
